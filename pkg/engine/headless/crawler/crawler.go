@@ -36,9 +36,18 @@ type Crawler struct {
 	crawlQueue    queue.Queue[*types.Action]
 	crawlGraph    *graph.CrawlGraph
 	simhashOracle *simhash.Oracle
-	uniqueActions map[string]struct{}
-	diagnostics   diagnostics.Writer
-	loggedIn      bool
+
+	// uniqueActionsMu guards uniqueActions. crawlFn writes to the map while
+	// RequestCallback-triggered code paths may read crawler state concurrently.
+	uniqueActionsMu sync.Mutex
+	uniqueActions   map[string]struct{}
+
+	// navigateMu serializes navigateBackToStateOrigin so the element, browser
+	// history and shortest-path strategies never interleave across goroutines.
+	navigateMu sync.Mutex
+
+	diagnostics diagnostics.Writer
+	loggedIn    bool
 }
 
 type Options struct {
@@ -326,6 +335,18 @@ func (c *Crawler) Crawl(URL string) error {
 
 var ErrNoCrawlingAction = errors.New("no more actions to crawl")
 
+// markActionUnique records actionHash and reports whether it was new.
+// It is safe for concurrent use.
+func (c *Crawler) markActionUnique(actionHash string) bool {
+	c.uniqueActionsMu.Lock()
+	defer c.uniqueActionsMu.Unlock()
+	if _, ok := c.uniqueActions[actionHash]; ok {
+		return false
+	}
+	c.uniqueActions[actionHash] = struct{}{}
+	return true
+}
+
 func (c *Crawler) crawlFn(ctx context.Context, action *types.Action, page *browser.BrowserPage) error {
 	defer func() {
 		c.launcher.PutBrowserToPool(page)
@@ -445,10 +466,9 @@ func (c *Crawler) crawlFn(ctx context.Context, action *types.Action, page *brows
 
 	for _, nav := range navigations {
 		actionHash := nav.Hash()
-		if _, ok := c.uniqueActions[actionHash]; ok {
+		if !c.markActionUnique(actionHash) {
 			continue
 		}
-		c.uniqueActions[actionHash] = struct{}{}
 
 		// Check if the element we have is a logout page
 		if nav.Element != nil && isLogoutPage(nav.Element) {
