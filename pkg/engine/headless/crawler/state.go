@@ -130,6 +130,13 @@ var ErrNoNavigationPossible = errors.New("no navigation possible")
 //
 // 3. If all else fails, we have the shortest path navigation.
 func (c *Crawler) navigateBackToStateOrigin(action *types.Action, page *browser.BrowserPage, currentPageHash string) (string, error) {
+	// Serialize the navigate-back strategies: tryElementNavigation,
+	// tryBrowserHistoryNavigation and tryShortestPathNavigation share
+	// read/write access to the crawl graph and the browser page, so
+	// only one navigation sequence may run at a time.
+	c.navigationMu.Lock()
+	defer c.navigationMu.Unlock()
+
 	c.logger.Debug("Found action with different origin id",
 		slog.String("action_origin_id", action.OriginID),
 		slog.String("current_page_hash", currentPageHash),

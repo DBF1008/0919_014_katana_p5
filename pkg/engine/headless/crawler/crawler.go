@@ -36,9 +36,18 @@ type Crawler struct {
 	crawlQueue    queue.Queue[*types.Action]
 	crawlGraph    *graph.CrawlGraph
 	simhashOracle *simhash.Oracle
-	uniqueActions map[string]struct{}
-	diagnostics   diagnostics.Writer
-	loggedIn      bool
+	// uniqueActionsMu guards uniqueActions. crawlFn may trigger
+	// RequestCallback callbacks (via page.FindNavigations) that run
+	// concurrently and reach back into the crawler, so the map must
+	// never be accessed without holding this mutex.
+	uniqueActionsMu sync.Mutex
+	uniqueActions   map[string]struct{}
+	// navigationMu serializes the navigate-back strategies
+	// (element, browser history, shortest path) which share
+	// read/write access to the crawl graph and the browser page.
+	navigationMu sync.Mutex
+	diagnostics  diagnostics.Writer
+	loggedIn     bool
 }
 
 type Options struct {
@@ -445,10 +454,9 @@ func (c *Crawler) crawlFn(ctx context.Context, action *types.Action, page *brows
 
 	for _, nav := range navigations {
 		actionHash := nav.Hash()
-		if _, ok := c.uniqueActions[actionHash]; ok {
+		if !c.markActionUnique(actionHash) {
 			continue
 		}
-		c.uniqueActions[actionHash] = struct{}{}
 
 		// Check if the element we have is a logout page
 		if nav.Element != nil && isLogoutPage(nav.Element) {
@@ -479,6 +487,18 @@ func (c *Crawler) crawlFn(ctx context.Context, action *types.Action, page *brows
 		return ErrNoCrawlingAction
 	}
 	return nil
+}
+
+// markActionUnique records actionHash and reports whether it was not
+// seen before. It is safe for concurrent use.
+func (c *Crawler) markActionUnique(actionHash string) bool {
+	c.uniqueActionsMu.Lock()
+	defer c.uniqueActionsMu.Unlock()
+	if _, ok := c.uniqueActions[actionHash]; ok {
+		return false
+	}
+	c.uniqueActions[actionHash] = struct{}{}
+	return true
 }
 
 var ErrElementNotVisible = errors.New("element not visible")

@@ -4,6 +4,7 @@ package graph
 
 import (
 	"os"
+	"sync"
 
 	"github.com/dominikbraun/graph"
 	"github.com/dominikbraun/graph/draw"
@@ -12,7 +13,13 @@ import (
 )
 
 // CrawlGraph is a graph for storing state information during crawling
+//
+// The underlying dominikbraun/graph store is not safe for concurrent use,
+// so all access is serialized through this mutex. Writes (AddPageState,
+// AddEdge) take the write lock, reads (GetPageState, ShortestPath, ...)
+// take the read lock.
 type CrawlGraph struct {
+	mu    sync.RWMutex
 	graph graph.Graph[string, types.PageState]
 }
 
@@ -32,6 +39,9 @@ func NewCrawlGraph() *CrawlGraph {
 }
 
 func (g *CrawlGraph) GetVertices() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
 	vertices := []string{}
 	adjacencyMap, err := g.graph.AdjacencyMap()
 	if err != nil {
@@ -45,6 +55,9 @@ func (g *CrawlGraph) GetVertices() []string {
 
 // AddNavigation adds a navigation to the graph
 func (g *CrawlGraph) AddPageState(n types.PageState) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	vertexAttrs := map[string]string{
 		"label": n.URL,
 	}
@@ -86,6 +99,9 @@ func (g *CrawlGraph) AddEdge(sourceState, targetState string, action *types.Acti
 	if action == nil {
 		return errors.New("add edge: action cannot be nil")
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	edgeAttrs := map[string]string{
 		"label": action.String(),
 	}
@@ -103,6 +119,9 @@ func (g *CrawlGraph) AddEdge(sourceState, targetState string, action *types.Acti
 }
 
 func (g *CrawlGraph) GetPageState(id string) (*types.PageState, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
 	pageVertex, err := g.graph.Vertex(id)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get vertex")
@@ -111,6 +130,9 @@ func (g *CrawlGraph) GetPageState(id string) (*types.PageState, error) {
 }
 
 func (g *CrawlGraph) ShortestPath(sourceState, targetState string) ([]*types.Action, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
 	shortestPath, err := graph.ShortestPath(g.graph, sourceState, targetState)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not find shortest path")
@@ -131,6 +153,9 @@ func (g *CrawlGraph) ShortestPath(sourceState, targetState string) ([]*types.Act
 }
 
 func (g *CrawlGraph) DrawGraph(file string) error {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
 	f, err := os.Create(file)
 	if err != nil {
 		return errors.Wrap(err, "could not create graph file")
